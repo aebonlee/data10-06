@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>설비고장 원인 진단 도우미 — 1단계</title>
+  <meta name="description" content="증상을 넣으면 과거 정비 사례에서 가능한 고장 원인과 먼저 확인할 것을 짚어 주고, 정비 사례로 초보자용 자체 정비 가이드북과 외부 수리 비용 현황을 만드는 브라우저 도구(1단계)">
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip" href="#main">본문으로 건너뛰기</a>
+  <div class="shell">
+    <aside class="side" aria-label="주 메뉴">
+      <a class="brand" href="#/diagnose">
+        <span class="brand-mark" aria-hidden="true">정비</span>
+        <span class="brand-text">
+          <span class="brand-name">고장 원인 진단 도우미</span>
+          <span class="brand-sub">data10-06 · 1단계</span>
+        </span>
+      </a>
+      <nav class="nav" id="nav"></nav>
+    </aside>
+
+    <div class="body">
+      <header class="topbar">
+        <a class="scope-chip" id="dataChip" href="#/cases"></a>
+        <span class="topbar-note" id="storeNote"></span>
+      </header>
+      <div id="sampleBanner" class="sample-banner" hidden></div>
+      <div id="storeBanner" class="store-banner" hidden></div>
+      <main id="main" class="main" tabindex="-1"></main>
+      <footer class="site-footer">
+        1단계 · 정비 사례와 사진은 이 브라우저 안에서만 저장합니다(서버로 보내지 않음) · AI 자동 보내기는 설정한 경우에만 · 진단은 과거 사례 기반 추정이며, 작업 전 반드시 전원 차단·잠금(LOTO)
+      </footer>
+    </div>
+  </div>
+
+  <dialog id="dlg" class="dialog" aria-labelledby="dlgTitle">
+    <div class="dialog-body">
+      <h2 id="dlgTitle"></h2>
+      <div id="dlgContent"></div>
+      <div class="dialog-actions" id="dlgActions"></div>
+    </div>
+  </dialog>
+
+  <dialog id="lightbox" class="dialog lightbox" aria-labelledby="lbTitle">
+    <div class="dialog-body">
+      <h2 id="lbTitle">고장 사진</h2>
+      <div class="lb-frame"><img id="lbImg" alt=""></div>
+      <p class="note" id="lbCap"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="lbPrev">이전</button>
+        <button type="button" class="btn" id="lbNext">다음</button>
+        <button type="button" class="btn btn-primary" id="lbClose">닫기</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <!-- 로컬 파일(file://)로 열어도 돌도록 module 이 아닌 일반 스크립트로 불러옵니다 -->
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="js/logic.js"></script>
+  <script src="js/sample-data.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/photos.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/ai-endpoint.js"></script>
+  <script src="js/ai-panel.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
