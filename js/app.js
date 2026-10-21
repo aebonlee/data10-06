@@ -10,7 +10,7 @@
     diag: { equipment: '', text: '', tags: [], tagTouched: {}, result: null, manual: '', manualFor: null, answer: '' },
     cases: { equipment: '', cause: '', by: '', q: '', from: '', to: '' },
     imp: null,
-    cost: { from: '', to: '' }
+    cost: { from: '', to: '', dedupe: true }
   };
 
   /* ── 작은 도구 ───────────────────────────── */
@@ -100,6 +100,27 @@
   function equipOf(name) { return db.equipments.filter(function (e) { return e.name === name; })[0] || null; }
   function caseById(id) { return db.cases.filter(function (c) { return c.id === id; })[0] || null; }
   function nextId() { db.seq = (db.seq || 0) + 1; return 'c' + db.seq; }
+  /* 2차 — 실제 수리이력 표기: 「2025-03 2주차」 · 비용 미기재/견적/개당 · 원인 짐작 · 처리 상태 */
+  function dateText(c) {
+    if (!c.date) return '날짜 없음';
+    if (c.datePrec === 'month') return c.date.slice(0, 7);
+    if (c.datePrec === 'week') return c.date.slice(0, 7) + ' ' + (Math.floor((Number(c.date.slice(8, 10)) - 1) / 7) + 1) + '주차';
+    return c.date;
+  }
+  function costText(c) {
+    var k = c.costKind || (c.cost == null ? 'missing' : 'won');
+    if (k === 'missing') return '미기재';
+    if (k === 'free') return '무상';
+    if (k === 'unread') return '못 읽음';
+    if (k === 'estimate') return '견적 ' + L.fmtWon(c.cost);
+    if (k === 'unit') return L.fmtWon(c.cost) + '/개';
+    return L.fmtWon(c.cost);
+  }
+  function causeCell(c) {
+    return h('span', null, L.canonCause(c.cause), c.causeInferred ? h('span', { class: 'kind meta', title: '원인 칸이 없어 증상·조치 글에서 짐작했습니다' }, '짐작') : null,
+      !c.causeInferred && L.canonCause(c.cause) !== c.cause ? h('small', { class: 'note block' }, c.cause) : null);
+  }
+  function statusBadge(c) { return c.status ? h('span', { class: 'kind ' + (c.status === '완료' ? 'ok' : 'obs') }, c.status) : null; }
   function byBadge(c) { return c.repairBy ? h('span', { class: 'kind ' + (c.repairBy === '외부' ? 'ext' : 'self') }, c.repairBy) : h('span', { class: 'kind meta' }, '구분 없음'); }
   function safetyStrip() {
     return h('div', { class: 'safety-strip', role: 'note' }, h('strong', null, '안전 먼저 '), L.SAFETY.common[0]);
@@ -126,7 +147,7 @@
     thumbUrl(id).then(function (u) { if (u) img.src = u; else img.classList.add('thumb-missing'); });
     return img;
   }
-  function caseTitle(c) { return (c.date || '날짜 없음') + ' · ' + (c.equipment || '설비 미기재') + ' · ' + L.canonCause(c.cause); }
+  function caseTitle(c) { return dateText(c) + ' · ' + (c.equipment || '설비 미기재') + ' · ' + L.canonCause(c.cause); }
   function photoCell(c) {
     var ps = c.photos || [];
     if (!ps.length) return h('span', { class: 'note' }, '-');
@@ -196,7 +217,8 @@
     { id: 'cases', no: '②', t: '정비 사례', s: '등록 · 사진 · 엑셀 내보내기' },
     { id: 'guide', no: '③', t: '자체 정비 가이드북', s: '원인별 카드 · 인쇄' },
     { id: 'cost', no: '④', t: '비용 현황', s: '외부 수리 비용 · 자체 처리 비율' },
-    { id: 'import', no: '', t: '내역서 가져오기', s: '정비 내역서 엑셀 → 사례' },
+    { id: 'import', no: '', t: '내역서 가져오기', s: '수리이력·내역서 엑셀 → 사례' },
+    { id: 'check', no: '', t: '자료 점검', s: '칸별 채움 · 더 채울 칸 · 권장 양식' },
     { id: 'settings', no: '', t: '설정', s: '설비 · AI 연결 · 백업' },
     { id: 'next', no: '', t: '다음 단계', s: '보내 주실 자료' }
   ];
@@ -298,6 +320,11 @@
       setTimeout(function () { var r = document.getElementById('diagResult'); if (r) r.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 30);
     }
     var examples = ['온도가 안 올라가고 기계가 멈춤', '기계 아래 바닥에 기름이 고임', '차단기가 떨어지고 모터에서 탄 냄새', '제품이 덜 채워지고 노즐에서 수지가 안 나옴'];
+    // 내 자료일 때는 자주 난 원인 묶음의 최근 증상으로 예시 버튼을 만듭니다
+    if (!db._sample && db.cases.length) examples = L.causeList(db.cases).filter(function (x) { return !L.isUnknownCause(x.cause); }).slice(0, 4).map(function (x) {
+      var c = db.cases.filter(function (y) { return L.causeKey(y.cause) === x.key && y.symptom; }).sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); })[0];
+      return c ? c.symptom.slice(0, 30) : '';
+    }).filter(Boolean);
     add(wrap, h('section', { class: 'card' },
       h('h2', null, '지금 증상'),
       h('div', { class: 'form-grid diag-form' },
@@ -331,7 +358,8 @@
           h('h3', { class: 'cause-name' }, c.cause),
           h('span', { class: 'kind lv ' + c.level }, L.LEVEL_TEXT[c.level])),
         h('div', { class: 'share' }, h('div', { class: 'share-bar', role: 'img', 'aria-label': '비중 ' + L.fmtPct(c.share) }, h('i', { style: 'width:' + Math.round(c.share * 100) + '%' })), h('b', null, L.fmtPct(c.share))),
-        h('p', { class: 'note' }, '비슷한 사례 ' + c.count + '건이 이 원인이었습니다 · 이 원인 전체 ' + c.totalCases + '건(외부 ' + c.extCount + ' · 자체 ' + c.selfCount + ')' +
+        h('p', { class: 'note' }, '비슷한 사례 ' + c.count + '건이 이 원인이었습니다 · 이 원인 전체 ' + c.totalCases + '건(외부 ' + c.extCount + ' · 자체 ' + c.selfCount +
+          (c.totalCases - c.extCount - c.selfCount ? ' · 구분 모름 ' + (c.totalCases - c.extCount - c.selfCount) : '') + ')' + (L.partOf(c.cause) ? ' · 부위: ' + L.partOf(c.cause) : '') +
           (c.avgExtCost != null ? ' · 외부 수리 평균 ' + L.fmtWon(c.avgExtCost) : '')),
         c.checks.length ? h('div', { class: 'checks' }, h('strong', null, '먼저 확인할 것'),
           h('ol', null, c.checks.map(function (x) {
@@ -345,14 +373,14 @@
     var rows = r.sims.map(function (s, i) {
       var c = s.c;
       return { cells: [
-        String(i + 1), Math.min(100, Math.round(s.score * 100)) + '%', c.date || '-', c.equipment || '-',
+        String(i + 1), Math.min(100, Math.round(s.score * 100)) + '%', dateText(c), c.equipment || '-',
         h('span', null, c.symptom, s.sharedTags.length ? h('span', { class: 'note' }, ' · 같은 태그: ' + s.sharedTags.join(', ')) : null),
-        L.canonCause(c.cause), L.stepCore(L.firstCheck(c)) || '-', h('span', null, byBadge(c), c.repairBy === '외부' && c.cost ? ' ' + L.fmtWon(c.cost) : ''), photoCell(c),
+        causeCell(c), L.stepCore(L.firstCheck(c)) || L.splitSteps(c.steps).join(' / ') || '-', h('span', null, byBadge(c), ' ', costText(c), statusBadge(c)), photoCell(c),
         h('button', { type: 'button', class: 'btn btn-sm', onclick: function () { showCase(c); } }, '자세히')
       ] };
     });
     add(box, h('section', { class: 'card' }, h('h2', null, '비슷한 과거 정비 사례'),
-      h('p', { class: 'note' }, '유사도 = 증상 글의 겹치는 글자 묶음(TF-IDF) ' + (r.tags.length ? '+ 같은 증상 태그 ' : '') + '+ 같은 설비 가산점. 100% 에 가까울수록 비슷합니다.'),
+      h('p', { class: 'note' }, '유사도 = 증상 글의 겹치는 글자 묶음(TF-IDF, 「멈춤·작동 불가」 같은 같은 뜻 말 포함) ' + (r.tags.length ? '+ 같은 증상 태그 ' : '') + '+ 같은 설비·같은 종류 가산점 + 증상에 적은 부위(서보·벨트·냉각 …)가 원인과 같으면 가산점. 「짐작」 은 원인 칸이 없어 증상·조치 글에서 짐작한 원인입니다.'),
       table(['#', '유사도', '일자', '설비', '증상', '원인', '먼저 본 것', '수리', '사진', ''], rows, { num: [true, true], cls: 'sims' })));
     add(box, aiCard(d));
     add(box, h('div', { class: 'btn-row' },
@@ -383,17 +411,20 @@
   function showCase(c) {
     var st = L.splitSteps(c.steps);
     var dl = h('dl', { class: 'summary' },
-      h('dt', null, '일자'), h('dd', null, c.date || '-'),
-      h('dt', null, '설비'), h('dd', null, c.equipment || '-'),
+      h('dt', null, '일자'), h('dd', null, dateText(c), c.datePrec && c.datePrec !== 'day' ? h('span', { class: 'note' }, ' (' + L.PREC_TEXT[c.datePrec] + '까지 적힘)') : null),
+      h('dt', null, '설비'), h('dd', null, c.equipment || '-', L.equipFamily(c.equipment) && L.equipFamily(c.equipment) !== c.equipment ? h('span', { class: 'note' }, ' (종류: ' + L.equipFamily(c.equipment) + ')') : null),
       h('dt', null, '증상'), h('dd', null, c.symptom || '-'),
       h('dt', null, '증상 태그'), h('dd', null, (c.tags || []).join(', ') || '-'),
-      h('dt', null, '원인'), h('dd', null, c.cause || '-', L.canonCause(c.cause) !== c.cause ? h('span', { class: 'note' }, ' (묶음: ' + L.canonCause(c.cause) + ')') : null),
-      h('dt', null, '조치 단계'), h('dd', null, st.length ? h('ol', { class: 'steps' }, st.map(function (s) { var k = L.stepKind(s); return h('li', null, s, k === 'safety' ? h('span', { class: 'kind ok' }, '안전') : k === 'expert' ? h('span', { class: 'kind danger' }, '담당자·전문가') : null); })) : '-'),
+      h('dt', null, '원인'), h('dd', null, c.cause || '-', c.causeInferred ? h('span', { class: 'kind meta' }, '증상·조치에서 짐작') : null,
+        !c.causeInferred && L.canonCause(c.cause) !== c.cause ? h('span', { class: 'note' }, ' (묶음: ' + L.canonCause(c.cause) + ')') : null, L.partOf(c.cause) ? h('span', { class: 'note' }, ' · 부위: ' + L.partOf(c.cause)) : null),
+      h('dt', null, '조치 단계'), h('dd', null, st.length ? h('ol', { class: 'steps' }, st.map(function (s) { var k = L.stepKind(s); return h('li', null, s, k === 'safety' ? h('span', { class: 'kind ok' }, '안전') : k === 'expert' ? h('span', { class: 'kind danger' }, '담당자·전문가') : k === 'note' ? h('span', { class: 'kind meta' }, '진행 기록') : null); })) : '-'),
       h('dt', null, '교체 부품'), h('dd', null, L.splitList(c.parts).join(', ') || '-'),
       h('dt', null, '필요 공구'), h('dd', null, L.splitList(c.tools).join(', ') || '-'),
-      h('dt', null, '수리'), h('dd', null, byBadge(c), c.cost != null ? ' ' + L.fmtWon(c.cost) : '', c.hours != null ? ' · ' + c.hours + '시간' : ''),
+      h('dt', null, '수리'), h('dd', null, byBadge(c), c.vendor && c.repairBy !== '자체' ? ' ' + c.vendor : '', ' · ', costText(c), c.hours != null ? ' · ' + c.hours + '시간' : ''),
+      h('dt', null, '처리 상태'), h('dd', null, statusBadge(c) || '-'),
       h('dt', null, '사진·영상 위치'), h('dd', null, c.media || '-'),
-      h('dt', null, '비고'), h('dd', null, c.memo || '-'));
+      h('dt', null, '비고'), h('dd', null, c.memo || '-'),
+      h('dt', null, '출처'), h('dd', null, [c.ref, c.source].filter(Boolean).join(' · ') || '-'));
     var pics = (c.photos || []).length ? h('ul', { class: 'photo-grid' }, c.photos.map(function (p, i) {
       return h('li', { class: 'photo-item' }, h('button', { type: 'button', class: 'thumb-btn big', 'aria-label': '사진 ' + (i + 1) + ' 크게 보기', onclick: function () { openLightbox(c.photos, i, caseTitle(c)); } }, thumbImg(p.id, '사진 ' + (i + 1))), p.memo ? h('small', null, p.memo) : null);
     })) : null;
@@ -415,7 +446,10 @@
       parts: h('input', { value: L.splitList(src.parts).join(', '), placeholder: '쉼표로 나눔. 예: 히터 밴드, 오링' }),
       tools: h('input', { value: L.splitList(src.tools).join(', '), placeholder: '예: 테스터, 육각렌치' }),
       repairBy: sel([['', '고르기'], ['외부', '외부(업체 수리)'], ['자체', '자체(팀에서 수리)']], src.repairBy),
+      vendor: h('input', { value: src.vendor || '', placeholder: '예: 업체 이름 · 전기기사 · 미기재' }),
       cost: h('input', { type: 'number', min: '0', step: '1000', value: src.cost == null ? '' : src.cost, inputmode: 'numeric' }),
+      costKind: sel([['won', '실제 지출'], ['estimate', '견적(실지출 아님)'], ['unit', '개당 단가'], ['free', '무상'], ['missing', '미기재']], src.costKind || (src.cost == null ? 'missing' : 'won')),
+      status: sel([['', '모름'], ['완료', '완료'], ['진행 중', '진행 중']], src.status || ''),
       hours: h('input', { type: 'number', min: '0', step: '0.5', value: src.hours == null ? '' : src.hours, inputmode: 'decimal' }),
       media: h('input', { value: src.media || '', placeholder: '예: 공유폴더/정비사진/2026-09 설비A 소음.mp4' }),
       memo: h('textarea', { rows: '2' })
@@ -517,16 +551,23 @@
       fld('일자', inputs.date), fld('설비', inputs.equipment, '새 이름이면 설비 목록에 이름만 더해집니다'), fld('외부/자체', inputs.repairBy),
       fld('증상 *', inputs.symptom, '현장 작업자가 본 그대로', 'span-all'),
       h('div', { class: 'field span-all' }, h('span', null, '증상 태그'), chips, autoBtn),
-      fld('원인 *', inputs.cause, '같은 원인을 다르게 적어도 「히터 단선」 처럼 묶어서 셉니다', 'span-all'),
+      fld('원인 *', inputs.cause, src.causeInferred ? '증상·조치 글에서 짐작한 원인입니다. 업체가 말한 원인으로 고치면 「짐작」 표시가 사라집니다' : '같은 원인을 다르게 적어도 「히터 단선」 처럼 묶어서 셉니다', 'span-all'),
       fld('조치 단계', inputs.steps, '한 줄에 한 단계. 첫 줄은 전원 차단·잠금(LOTO). 「— 결과」 를 붙이면 그때 본 결과로 남깁니다(예: 센서 커넥터 확인 — 반쯤 빠짐)', 'span-all'),
-      fld('교체 부품', inputs.parts), fld('필요 공구', inputs.tools), fld('비용(원)', inputs.cost, '외부는 청구 금액, 자체는 부품 값'),
+      fld('교체 부품', inputs.parts), fld('필요 공구', inputs.tools), fld('수리 업체', inputs.vendor),
+      fld('비용(원)', inputs.cost, '외부는 청구 금액, 자체는 부품 값'), fld('비용 구분', inputs.costKind, '견적은 비용 합계에서 따로 셉니다'), fld('처리 상태', inputs.status),
       fld('소요시간(시간)', inputs.hours), fld('사진·영상 위치', inputs.media, '동영상은 저장하지 않고 위치만', 'span-2'),
       fld('비고', inputs.memo, null, 'span-all'),
       h('div', { class: 'field span-all' }, h('span', null, '사진'), photoBox));
     function collect() {
       var o = {};
       Object.keys(inputs).forEach(function (k) { o[k] = inputs[k].value; });
-      o.tags = tags; o.id = src.id; o.source = src.source; o.createdAt = src.createdAt || new Date().toISOString();
+      o.tags = tags; o.id = src.id; o.source = src.source; o.ref = src.ref; o.createdAt = src.createdAt || new Date().toISOString();
+      // 주차·월까지만 적힌 일자는 고치지 않았으면 그 정밀도를 지킵니다. 원인을 고치면 「짐작」 표시를 뗍니다
+      o.datePrec = o.date && o.date === src.date ? src.datePrec || 'day' : 'day';
+      o.causeInferred = !!src.causeInferred && L.str(o.cause) === L.str(src.cause);
+      if (L.str(o.cost) !== '' && (o.costKind === 'missing' || o.costKind === 'free' && Number(o.cost) > 0)) o.costKind = 'won';
+      if (L.str(o.cost) === '' && o.costKind !== 'free') o.costKind = 'missing';
+      if (o.costKind === 'free') o.cost = 0;
       o.photos = work.map(function (p) { return { id: p.id, name: p.name || '', w: p.w, h: p.h, bytes: p.bytes, memo: L.str(p.memo) }; });
       return L.cleanCase(o);
     }
@@ -560,9 +601,10 @@
       if (f.equipment && c.equipment !== f.equipment) return false;
       if (f.cause && L.causeKey(c.cause) !== f.cause) return false;
       if (f.by && (c.repairBy || '-') !== f.by) return false;
+      if (f.status && (c.status || '-') !== f.status) return false;
       if (f.from && (!c.date || c.date < f.from)) return false;
       if (f.to && (!c.date || c.date > f.to)) return false;
-      if (q && L.squash([c.symptom, c.cause, L.splitSteps(c.steps).join(' '), L.splitList(c.parts).join(' '), c.memo, c.equipment].join(' ')).indexOf(q) < 0) return false;
+      if (q && L.squash([c.symptom, c.cause, L.canonCause(c.cause), L.splitSteps(c.steps).join(' '), L.splitList(c.parts).join(' '), c.memo, c.equipment, c.vendor].join(' ')).indexOf(q) < 0) return false;
       return true;
     }).sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
   }
@@ -581,6 +623,7 @@
       fld('설비', sel([['', '전체']].concat(db.equipments.map(function (e) { return e.name; })), f.equipment, { onchange: onF('equipment') })),
       fld('원인(묶음)', sel([['', '전체']].concat(L.causeList(db.cases).map(function (x) { return [x.key, x.cause + ' (' + x.count + ')']; })), f.cause, { onchange: onF('cause') })),
       fld('외부/자체', sel([['', '전체'], '외부', '자체', ['-', '구분 없음']], f.by, { onchange: onF('by') })),
+      fld('처리 상태', sel([['', '전체'], '완료', '진행 중', ['-', '모름']], f.status || '', { onchange: onF('status') })),
       fld('시작일', h('input', { type: 'date', value: f.from, onchange: onF('from') })),
       fld('끝일', h('input', { type: 'date', value: f.to, onchange: onF('to') })),
       fld('낱말', qIn))));
@@ -588,23 +631,24 @@
     var rows = list.map(function (c) {
       var st = L.splitSteps(c.steps);
       return { cells: [
-        photoCell(c), c.date || '-', c.equipment || '-', c.symptom,
-        h('span', null, L.canonCause(c.cause), L.canonCause(c.cause) !== c.cause ? h('small', { class: 'note block' }, c.cause) : null),
+        photoCell(c), dateText(c), c.equipment || '-', c.symptom,
+        causeCell(c),
         st.length ? h('span', null, L.stepCore(L.firstCheck(c)) || st[0], h('small', { class: 'note block' }, '단계 ' + st.length + '개')) : '-',
-        L.splitList(c.parts).join(', ') || '-', byBadge(c), c.cost == null ? '-' : L.fmtWon(c.cost), c.hours == null ? '-' : c.hours,
+        L.splitList(c.parts).join(', ') || '-', h('span', null, byBadge(c), c.vendor && c.repairBy !== '자체' ? h('small', { class: 'note block' }, c.vendor) : null), costText(c), statusBadge(c) || '-',
         h('span', { class: 'btn-row nowrap' },
           h('button', { type: 'button', class: 'btn btn-sm', onclick: function () { showCase(c); } }, '보기'),
           h('button', { type: 'button', class: 'btn btn-sm', onclick: function () { editCase(c); } }, '고치기'))
       ] };
     });
-    var extCost = list.filter(function (c) { return c.repairBy === '외부'; }).reduce(function (s, c) { return s + (c.cost || 0); }, 0);
+    var extCost = list.filter(function (c) { return c.repairBy === '외부'; }).reduce(function (s, c) { return s + L.spent(c); }, 0);
+    var allCost = list.reduce(function (s, c) { return s + L.spent(c); }, 0);
     add(wrap, h('section', { class: 'card' },
       h('div', { class: 'list-head' }, h('h2', null, list.length + '건' + (list.length !== db.cases.length ? ' (전체 ' + db.cases.length + '건 중)' : '')),
-        h('span', { class: 'note' }, '외부 수리 비용 합계 ' + L.fmtWon(extCost)),
+        h('span', { class: 'note' }, '외부 수리 비용 ' + L.fmtWon(extCost) + ' · 적힌 비용 전체 ' + L.fmtWon(allCost) + '(견적·미기재 제외)'),
         h('div', { class: 'btn-row' },
           h('button', { type: 'button', class: 'btn btn-sm', onclick: function () { writeXlsx('정비사례_' + today() + '.xlsx', { '정비 사례': L.casesToAoa(list) }); } }, '엑셀 내보내기'),
           h('button', { type: 'button', class: 'btn btn-sm', onclick: function () { writeXlsx('정비사례_빈양식.xlsx', { '정비 사례': L.templateAoa() }); } }, '빈 양식 받기'))),
-      table(['사진', '일자', '설비', '증상', '원인', '먼저 본 것', '교체 부품', '수리', '비용', '시간', ''], rows, { num: [false, false, false, false, false, false, false, false, true, true], cls: 'cases' }),
+      table(['사진', '일자', '설비', '증상', '원인', '먼저 본 것', '교체 부품', '수리', '비용', '상태', ''], rows, { num: [false, false, false, false, false, false, false, false, true, false], cls: 'cases' }),
       storageNote(h('div', { style: 'margin-top:10px' }))));
     return wrap;
   }
@@ -621,15 +665,20 @@
       fr.readAsArrayBuffer(file);
     });
   }
+  function wbSheets(wb) {
+    // 병합 셀(세로로 합친 설비명 등)은 합친 범위 전체에 값을 채워 읽습니다
+    return wb.SheetNames.map(function (n) { return { name: n, aoa: L.unmerge(XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: null }), wb.Sheets[n]['!merges']) }; });
+  }
   function startImport(fileName, wb) {
-    var sheets = wb.SheetNames.map(function (n) { return { name: n, aoa: XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: null }) }; });
-    // 머리행이 가장 잘 맞는 시트를 먼저 고릅니다
+    var sheets = wbSheets(wb);
+    // 머리행이 가장 잘 맞는 시트를 먼저 고릅니다. 머리 모양이 같은 시트가 여럿이면(2025 · 2026 처럼) 함께 가져오기를 켭니다
+    var plans = L.sheetPlans(sheets, db.mapping);
     var best = sheets[0], bestN = -1;
     sheets.forEach(function (s) {
       var hr = L.detectHeaderRow(s.aoa), m = L.autoMap(L.headersOf(s.aoa, hr), null), n = Object.keys(m).length;
       if (n > bestN) { best = s; bestN = n; }
     });
-    ui.imp = { fileName: fileName, sheets: sheets, sheet: best ? best.name : '' };
+    ui.imp = { fileName: fileName, sheets: sheets, sheet: best ? best.name : '', plans: plans, multi: plans.length > 1 };
     pickSheet(ui.imp.sheet);
     render();
   }
@@ -644,35 +693,60 @@
     imp.headers = L.headersOf(imp.aoa, imp.hr);
     imp.map = L.autoMap(imp.headers, db.mapping);
   }
+  /* 지금 고른 시트(열 맞추기 그대로) + 「함께 가져오기」 를 켰으면 머리 모양이 같은 다른 시트(자동 연결) */
+  function importRows() {
+    var imp = ui.imp, pre = 'i' + Date.now().toString(36) + '_', out = { rows: [], issues: [], sheets: [imp.sheet] };
+    var r0 = L.applyMapping(imp.aoa, imp.hr, imp.map, { idPrefix: pre + '0_', source: '엑셀: ' + imp.fileName + ' · ' + imp.sheet, sheet: imp.multi ? imp.sheet : '' });
+    out.rows = r0.rows; out.issues = r0.issues;
+    if (imp.multi) (imp.plans || []).forEach(function (p, i) {
+      if (p.name === imp.sheet) return;
+      var sh = imp.sheets.filter(function (x) { return x.name === p.name; })[0];
+      var r = L.applyMapping(sh.aoa, p.hr, p.map, { idPrefix: pre + (i + 1) + '_', source: '엑셀: ' + imp.fileName + ' · ' + p.name, sheet: p.name });
+      out.rows = out.rows.concat(r.rows); out.issues = out.issues.concat(r.issues); out.sheets.push(p.name);
+    });
+    return out;
+  }
+  function sampleWorkbook(kind) {
+    var wb = XLSX.utils.book_new();
+    if (kind === 'log') {
+      var ws = XLSX.utils.aoa_to_sheet(SMP.repairLogAoa());
+      XLSX.utils.book_append_sheet(wb, ws, '통합 수리이력');
+      var ws2 = XLSX.utils.aoa_to_sheet(SMP.repairLogSummaryAoa()); ws2['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
+      XLSX.utils.book_append_sheet(wb, ws2, '요약');
+    } else if (kind === 'recommended') {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(L.recommendedAoa()), '수리이력(권장 양식)');
+    } else XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(SMP.receiptAoa()), '정비내역');
+    return wb;
+  }
   function viewImport() {
     var wrap = h('div');
-    add(wrap, pageHead('가져오기', '정비 내역서 엑셀 가져오기', '외부 업체 정비 내역서·수리 대장을 엑셀로 정리해 두었다면 한 번에 사례로 넣습니다. 열 이름이 달라도 「열 맞추기」 에서 연결합니다. 파일은 이 브라우저 안에서만 읽습니다.'));
+    add(wrap, pageHead('가져오기', '정비 내역서·수리이력 엑셀 가져오기', '외부 업체 정비 내역서·설비 고장 수리이력을 엑셀로 정리해 두었다면 한 번에 사례로 넣습니다. 열 이름이 달라도 「열 맞추기」 에서 연결합니다. 파일은 이 브라우저 안에서만 읽습니다.'));
     var input = h('input', { type: 'file', accept: '.xlsx,.xls,.xlsm,.csv', 'aria-label': '엑셀 파일 고르기', onchange: function (e) {
       var f = e.target.files[0]; e.target.value = '';
       if (!f) return;
       readWorkbook(f).then(function (wb) { startImport(f.name, wb); }, function (err) { toast(err.message, true); });
     } });
+    function tryWb(name, wb) { startImport(name, XLSX.read(XLSX.write(wb, { bookType: 'xlsx', type: 'array' }), { type: 'array', cellDates: true })); }
     add(wrap, h('section', { class: 'card' },
       h('div', { class: 'drop' },
         h('label', { class: 'btn btn-primary' }, '엑셀 파일 고르기', input),
-        h('button', { type: 'button', class: 'btn', onclick: function () {
-          var aoa = SMP.receiptAoa();
-          writeXlsx('예시데이터_정비내역서.xlsx', { '정비내역': aoa });
-        } }, '예시 정비 내역서 받기(가상)'),
-        h('button', { type: 'button', class: 'btn', onclick: function () {
-          var wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(SMP.receiptAoa()), '정비내역');
-          startImport('예시데이터_정비내역서.xlsx (가상)', XLSX.read(XLSX.write(wb, { bookType: 'xlsx', type: 'array' }), { type: 'array', cellDates: true }));
-        } }, '예시 내역서로 바로 시험')),
+        h('button', { type: 'button', class: 'btn', onclick: function () { tryWb('예시데이터_수리이력_지금양식.xlsx (가상)', sampleWorkbook('log')); } }, '예시 수리이력(지금 양식 모양)으로 시험'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { tryWb('예시데이터_정비내역서.xlsx (가상)', sampleWorkbook('receipt')); } }, '예시 정비 내역서(칸이 다 찬 것)로 시험'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { writeXlsx('수리이력_권장양식.xlsx', { '수리이력(권장 양식)': L.recommendedAoa() }); } }, '권장 양식 받기')),
       h('ul', { class: 'note' },
-        h('li', null, '한 줄 = 정비 1건. 위쪽에 제목 줄이 있어도 머리행(일자·설비·증상·원인…)을 찾아 읽습니다.'),
-        h('li', null, '조치 내용은 「1) … 2) …」 나 줄바꿈으로 적힌 한 칸을 단계로 나눕니다. 금액은 「680,000원」 「15만원」, 시간은 「1시간 30분」 「90분」 도 읽습니다.'),
-        h('li', null, '종이 내역서·영수증뿐이라면: 빈 양식(「정비 사례 → 빈 양식 받기」)에 5~10건만 옮겨 적어도 시작할 수 있습니다.'))));
+        h('li', null, '한 줄 = 고장·정비 1건. 위쪽에 제목 줄이 있어도 머리행(일자·설비명·증상·처리일자·수리업체·비용…)을 찾아 읽습니다. 병합된 칸은 범위 전체에 같은 값으로 채워 읽고, 머리 모양이 같은 시트가 여럿이면 함께 가져옵니다.'),
+        h('li', null, '원인 칸이 없어도 됩니다 — 「릴레이 접촉 불량으로 … 파손」 처럼 증상에 섞인 원인이나 조치 글에서 짐작하고 「짐작」 표시를 붙입니다. 조치 칸이 없으면 처리일자 칸의 조치 글, 그다음 비고를 조치로 읽습니다.'),
+        h('li', null, '일자는 「2025-03 2주차」 「2026-01 (보고서 기준)」 도 읽습니다. 비용은 「미기재」(모름) · 「무상」(0원) · 「40,000원/개」(개당) · 「견적 …원」(실지출과 따로) 를 나눠 셉니다. 업체 칸이 「미기재」 면 외부/자체를 모름으로 둡니다.'),
+        h('li', null, '종이 내역서·영수증뿐이라면: 「권장 양식 받기」 에 5~10건만 옮겨 적어도 시작할 수 있습니다.'))));
     var imp = ui.imp;
     if (!imp) return wrap;
     var sheetSel = sel(imp.sheets.map(function (s) { return s.name; }), imp.sheet, { onchange: function (e) { pickSheet(e.target.value); render(); } });
     var hrIn = h('input', { type: 'number', min: '1', max: String(Math.max(1, imp.aoa.length)), value: String(imp.hr + 1), onchange: function (e) {
       var v = Math.max(1, Math.min(imp.aoa.length, Number(e.target.value) || 1)); imp.hr = v - 1; remap(); render();
     } });
+    var others = (imp.plans || []).filter(function (p) { return p.name !== imp.sheet; });
+    var multiCb = h('input', { type: 'checkbox' }); multiCb.checked = !!imp.multi;
+    multiCb.addEventListener('change', function () { imp.multi = multiCb.checked; render(); });
     var grid = h('div', { class: 'map-grid' });
     L.FIELDS.forEach(function (f) {
       var s = sel([['', '— 연결 안 함 —']].concat(imp.headers.map(function (x, i) { return [String(i), L.colName(i) + '열 · ' + x]; })), imp.map[f.id] == null ? '' : String(imp.map[f.id]), { 'aria-label': f.label + ' 열' });
@@ -682,42 +756,105 @@
         h('span', { class: 'col' }, f.label, f.req ? h('span', { class: 'req' }, ' 꼭 필요') : null), s, h('span', { class: 'ex', title: ex }, ex || ' ')));
     });
     var missing = L.missingRequired(imp.map);
-    var res = missing.length ? null : L.applyMapping(imp.aoa, imp.hr, imp.map, { idPrefix: 'i' + Date.now().toString(36) + '_', source: '엑셀: ' + imp.fileName });
+    var res = missing.length ? null : importRows();
     var merged = res ? L.mergeCases(db.cases, res.rows) : null;
     add(wrap, h('section', { class: 'card' },
       h('h2', null, '열 맞추기 — ' + imp.fileName),
       h('div', { class: 'form-grid' }, fld('시트', sheetSel), fld('머리행(줄 번호)', hrIn, '자동으로 찾았습니다. 틀리면 고쳐 주세요')),
+      others.length ? h('label', { class: 'opt', style: 'margin-top:10px' }, multiCb, h('span', null, '머리 모양이 같은 시트 ' + others.length + '개(' + others.map(function (p) { return p.name; }).join(', ') + ')도 함께 가져오기')) : null,
       h('p', { class: 'note', style: 'margin-top:10px' }, '왼쪽 항목마다 내 파일의 어느 열인지 고릅니다. 연결은 저장되어 다음 파일에서 자동으로 맞춰집니다.'),
       grid,
       missing.length ? h('p', { class: 'alert warn' }, '꼭 필요한 항목이 연결되지 않았습니다: ' + missing.join(', ')) : null));
     if (res) {
-      var pv = res.rows.slice(0, 5).map(function (c) {
-        return [c.date || '-', c.equipment || '-', c.symptom, (c.tags || []).join(', ') || '-', c.cause + (L.canonCause(c.cause) !== c.cause ? ' → ' + L.canonCause(c.cause) : ''),
-          String(L.splitSteps(c.steps).length) + '단계', c.repairBy || '-', c.cost == null ? '-' : L.fmtWon(c.cost), c.hours == null ? '-' : String(c.hours)];
+      var pv = res.rows.slice(0, 6).map(function (c) {
+        return [dateText(c), c.equipment || '-', c.symptom, causeCell(c), L.splitSteps(c.steps).join(' / ') || '-',
+          h('span', null, byBadge(c), c.vendor && c.repairBy !== '자체' ? h('small', { class: 'note block' }, c.vendor) : null), costText(c), statusBadge(c) || '-'];
       });
+      var chk = L.dataCheck(res.rows);
       add(wrap, h('section', { class: 'card' },
-        h('h2', null, '미리 보기 — 읽은 사례 ' + res.rows.length + '건'),
-        table(['일자', '설비', '증상', '태그(자동)', '원인 → 묶음', '조치', '구분', '비용', '시간'], pv),
+        h('h2', null, '미리 보기 — 읽은 사례 ' + res.rows.length + '건' + (res.sheets.length > 1 ? ' (시트 ' + res.sheets.length + '개)' : '')),
+        table(['일자', '설비', '증상', '원인(짐작 표시)', '조치', '수리', '비용', '상태'], pv, { cls: 'sims' }),
         res.issues.length ? h('details', { class: 'warn-list' }, h('summary', null, '확인할 줄 ' + res.issues.length + '개'),
           h('ul', null, res.issues.map(function (x) { return h('li', null, x.row + '행: ' + x.msg); }))) : null,
+        h('h3', null, '이 파일의 자료 점검'), checkSummary(chk, true),
         h('p', null, '이미 있는 사례와 같은 건(일자·설비·증상·원인이 같음) ' + merged.dup + '건은 건너뛰고, 새 사례 ' + merged.added + '건을 더합니다.'),
         h('div', { class: 'btn-row' },
           h('button', { type: 'button', class: 'btn btn-primary', disabled: !merged.added, onclick: function () {
-            var wasSample = db._sample && !db.cases.length;
-            var m2 = L.mergeCases(db.cases, res.rows);
-            // 번호를 이 도구의 번호로 다시 붙입니다
-            var addedRows = m2.cases.slice(db.cases.length);
+            var wasSample = db._sample;
+            var base = wasSample ? [] : db.cases;
+            if (wasSample) { db = L.emptyDb(); clearPhotos(); }
+            var m2 = L.mergeCases(base, res.rows);
+            var addedRows = m2.cases.slice(base.length);
             addedRows.forEach(function (c) { c.id = nextId(); });
             db.cases = m2.cases;
             db.mapping = L.mappingToSaved(imp.headers, imp.map);
             var eqAdded = L.syncEquipments(db);
-            if (wasSample) db._sample = false;
-            save(); ui.imp = null;
-            toast('사례 ' + m2.added + '건을 더했습니다' + (eqAdded ? ' · 새 설비 ' + eqAdded + '대' : ''));
-            location.hash = '#/cases';
-          } }, '사례 ' + merged.added + '건 더하기'),
+            save(); ui.imp = null; ui.diag.result = null;
+            toast('사례 ' + m2.added + '건을 더했습니다' + (eqAdded ? ' · 새 설비 ' + eqAdded + '대' : '') + (wasSample ? ' (예시 사례는 지웠습니다)' : ''));
+            location.hash = '#/check';
+          } }, '사례 ' + merged.added + '건 더하기' + (db._sample ? '(예시 지우고)' : '')),
           h('button', { type: 'button', class: 'btn', onclick: function () { ui.imp = null; render(); } }, '취소'))));
     }
+    return wrap;
+  }
+
+  /* ── 자료 점검 — 「이렇게 올리면 되나요?」 ─────────── */
+  function bar(rate) { return h('span', { class: 'fill-bar', role: 'img', 'aria-label': L.fmtPct(rate) }, h('i', { style: 'width:' + Math.round(rate * 100) + '%' })); }
+  function checkSummary(chk, compact) {
+    var box = h('div', { class: 'check-sum' });
+    add(box, h('div', { class: 'feat-list' }, chk.features.map(function (f) {
+      return h('div', { class: 'feat ' + (f.level === '좋음' ? 'good' : f.level === '부족' ? 'bad' : 'mid') }, h('strong', null, f.name), h('span', { class: 'kind ' + (f.level === '좋음' ? 'ok' : f.level === '부족' ? 'danger' : 'obs') }, f.level), h('p', { class: 'note' }, f.text));
+    })));
+    if (chk.todo.length) add(box, h('p', null, h('strong', null, '더 채우면 좋은 칸: '), chk.todo.map(function (f) { return f.label + ' ' + L.fmtPct(f.rate); }).join(' · ')));
+    if (!compact) return box;
+    add(box, h('p', { class: 'note' }, '칸별 채움률·중복 의심·권장 양식은 가져온 뒤 「자료 점검」 화면에서 자세히 봅니다.'));
+    return box;
+  }
+  function viewCheck() {
+    var wrap = h('div');
+    add(wrap, pageHead('자료 점검', '이렇게 올리면 되나요? — 칸별 점검', '지금 들어 있는 사례로 어느 칸이 얼마나 채워졌는지, 어떤 기능이 지금 자료로 되는지, 어떤 칸을 더 채우면 진단·가이드북·비용 현황이 좋아지는지 보여 줍니다.'));
+    if (!db.cases.length) { add(wrap, emptyNotice()); return wrap; }
+    var chk = L.dataCheck(db.cases);
+    var F = {}; chk.fields.forEach(function (f) { F[f.id] = f; });
+    var answer = [];
+    answer.push('네, 지금 양식 그대로 읽힙니다. 사례 ' + chk.n + '건으로 증상 진단은 바로 됩니다' + (F.cause.inferred ? '(원인 ' + F.cause.inferred + '건은 증상·조치 글에서 짐작).' : '.'));
+    if (chk.todo.length) answer.push('더 좋아지려면 ' + chk.todo.slice(0, 4).map(function (f) { return '「' + f.label + '」'; }).join(' · ') + ' 칸을 채워 주세요. 새 칸을 만들기 어렵다면 지금 칸에 「원인: … / 조치: 1) … 2) …」 처럼 적어도 읽습니다.');
+    if (db._sample) answer = ['지금은 예시 데이터(가상)입니다. 「내역서 가져오기」 로 실제 수리이력을 넣으면 그 자료로 점검합니다.'];
+    add(wrap, h('section', { class: 'card answer' }, h('h2', null, '한 줄 답'), answer.map(function (t) { return h('p', null, t); }), checkSummary(chk, false)));
+    add(wrap, h('section', { class: 'card' }, h('h2', null, '칸별 채움'),
+      table(['칸', '구분', '채움', '', '내용', '왜 필요한가'], chk.fields.map(function (f) {
+        return [f.label, h('span', { class: 'kind ' + (f.need === '필수' ? 'danger' : f.need === '권장' ? 'obs' : 'meta') }, f.need), f.filled + '/' + chk.n, bar(f.rate), f.detail || '-', h('span', { class: 'note' }, f.why)];
+      }), { num: [false, false, true], cls: 'check-table' })));
+    var byId = {}; db.cases.forEach(function (c) { byId[c.id] = c; });
+    function caseLink(id) { var c = byId[id]; return c ? h('button', { type: 'button', class: 'linklike', onclick: function () { showCase(c); } }, dateText(c) + ' ' + (c.equipment || '') + ' — ' + c.symptom) : id; }
+    add(wrap, h('section', { class: 'card' }, h('h2', null, '확인할 줄'),
+      h('h3', null, '같은 고장이 이어 보고된 것 같은 줄 ' + chk.dups.length + '쌍' + (chk.dupSameCost.length ? ' · 그중 같은 금액 ' + chk.dupSameCost.length + '쌍' : '')),
+      h('p', { class: 'note' }, '같은 설비에서 45일 안에 같은 원인(또는 거의 같은 증상)으로 적힌 두 줄입니다. 주간 보고가 이어진 것이면 한 건으로 합치거나 비고에 「앞 건과 같은 고장」 이라고 적어 주세요. 같은 금액이 두 번 적힌 쌍은 비용 현황에서 한 번만 셉니다.'),
+      chk.dups.length ? h('ul', { class: 'dup-list' }, chk.dups.map(function (d) {
+        return h('li', null, caseLink(d.first), h('span', { class: 'note' }, ' → ' + d.gap + '일 뒤 '), caseLink(d.later), d.sameCost ? h('span', { class: 'kind obs' }, '같은 금액 ' + L.fmtWon(d.cost)) : null);
+      })) : h('p', null, '없습니다.'),
+      h('h3', null, '아직 끝나지 않은 고장 ' + chk.pending.length + '건'),
+      chk.pending.length ? h('ul', null, chk.pending.map(function (id) { return h('li', null, caseLink(id)); })) : h('p', null, '없습니다.'),
+      (chk.estimates.length || chk.unitPrices.length) ? h('div', null, h('h3', null, '금액을 다시 볼 줄'),
+        h('ul', null, chk.estimates.map(function (id) { return h('li', null, caseLink(id), h('span', { class: 'kind meta' }, '견적 — 실제 지출 금액을 적어 주세요')); })
+          .concat(chk.unitPrices.map(function (id) { return h('li', null, caseLink(id), h('span', { class: 'kind meta' }, '개당 단가 — 수량을 함께 적어 주세요')); })))) : null));
+    add(wrap, h('section', { class: 'card' }, h('h2', null, '설비 종류 · 부위'),
+      h('div', { class: 'guide-grid' },
+        h('div', null, h('h3', null, '설비 종류별 건수'), h('p', null, chk.families.map(function (x) { return x.name + ' ' + x.count; }).join(' · ') || '-'),
+          h('p', { class: 'note' }, '「압출기 1호기」 「압출 1호기」 「압출기」 를 한 종류로 묶습니다. 같은 종류 사례는 진단에서 조금 앞으로 옵니다.')),
+        h('div', null, h('h3', null, '부위별 건수(원인 묶음 기준)'), h('p', null, chk.parts.map(function (x) { return x.name + ' ' + x.count; }).join(' · ') || '-')))));
+    var rec = L.recommendedAoa();
+    add(wrap, h('section', { class: 'card' }, h('h2', null, '권장 양식 — 꼭 더할 칸은 넷'),
+      h('p', null, '지금 양식(연도 · 설비명 · 일자 · 증상 · 처리일자 · 수리업체 · 비용 · 비고 · 출처)도 그대로 읽힙니다. 새로 정리하신다면 아래 모양을 권합니다 — 꼭 더할 칸은 「원인(점검 결과)」 「조치 순서」 「교체 부품」 「외부/자체」 넷이고, 나머지는 있으면 좋은 칸입니다. 아래 두 줄은 지어낸 예시입니다.'),
+      table(rec[0], rec.slice(1).map(function (r) { return r.map(function (v) { return typeof v === 'number' ? v.toLocaleString('ko-KR') : String(v); }); }), { cls: 'sims' }),
+      h('ul', { class: 'note' },
+        h('li', null, '원인은 업체가 말한 「점검 결과」 그대로(「서보드라이버 고장」). 모르면 「원인 미상」.'),
+        h('li', null, '조치는 한 칸에 「1) … 2) … 3) …」 로 — 그때 무엇부터 봤는지가 가이드북의 확인 순서가 됩니다.'),
+        h('li', null, '비용은 실제 지출만, 견적이면 「견적/실지출」 칸에 견적이라고. 개당 금액이면 수량도 함께.'),
+        h('li', null, '증상 사진은 「사진 파일명」 칸에 파일 이름만 적고, 사진은 「정비 사례 → 고치기 → 사진」 에서 붙이면 줄여서 저장됩니다.')),
+      h('div', { class: 'btn-row' },
+        h('button', { type: 'button', class: 'btn btn-primary', onclick: function () { writeXlsx('수리이력_권장양식.xlsx', { '수리이력(권장 양식)': L.recommendedAoa() }); } }, '권장 양식 받기(예시 2줄)'),
+        h('button', { type: 'button', class: 'btn', onclick: function () { writeXlsx('수리이력_권장양식_내자료_' + today() + '.xlsx', { '수리이력': L.toRecommendedAoa(db.cases) }); } }, '지금 자료를 권장 양식으로 내보내기(빈 칸 채우기용)'))));
     return wrap;
   }
 
@@ -755,7 +892,7 @@
     return h('article', { class: 'card guide-card', id: 'g-' + c.key },
       h('header', { class: 'guide-head' },
         h('div', null, h('div', { class: 'stage' }, '자체 정비 가이드'), h('h2', null, c.cause),
-          h('p', { class: 'note' }, '사례 ' + c.count + '건 · 외부 ' + c.extCount + ' · 자체 ' + c.selfCount + (c.avgExtCost != null ? ' · 외부 수리 평균 ' + L.fmtWon(c.avgExtCost) : '') +
+          h('p', { class: 'note' }, '사례 ' + c.count + '건 · 외부 ' + c.extCount + ' · 자체 ' + c.selfCount + (c.count - c.extCount - c.selfCount ? ' · 구분 모름 ' + (c.count - c.extCount - c.selfCount) : '') + (L.partOf(c.cause) ? ' · 부위: ' + L.partOf(c.cause) : '') + (c.avgExtCost != null ? ' · 외부 수리 평균 ' + L.fmtWon(c.avgExtCost) : '') +
             ' · 설비: ' + c.equipments.map(function (e) { return e.name + '(' + e.count + ')'; }).join(', '))),
         h('div', { class: 'badges' }, h('span', { class: 'kind ' + (c.edited.length ? 'obs' : 'meta') }, c.edited.length ? '수정됨' : '자동 초안'),
           c.count < 2 ? h('span', { class: 'kind obs' }, '사례 1건 — 얕은 초안') : null,
@@ -764,7 +901,10 @@
         h('section', null, h('h3', null, '이런 증상일 때'), h('ul', null, c.symptoms.map(function (s) { return h('li', null, s); })),
           c.tags.length ? h('p', { class: 'note' }, '자주 붙은 태그: ' + c.tags.map(function (t) { return t.name; }).join(', ')) : null),
         h('section', { class: 'safety-box' }, h('h3', null, '안전 먼저'), h('ul', null, c.safety.map(function (s) { return h('li', null, s); })))),
-      h('section', null, h('h3', null, '확인 순서'), ol),
+      h('section', null, h('h3', null, '확인 순서'), c.steps.length ? ol : h('p', { class: 'note' }, '조치가 두 단계 이상(「1) … 2) …」) 적힌 사례가 아직 없어 순서를 만들지 못했습니다. 아래 「지난 조치 기록」 을 보고, 다음 정비 때 무엇부터 봤는지 순서대로 적어 주세요.'),
+        (c.actions || []).length ? h('div', { class: 'past-actions' }, h('h4', null, '지난 조치 기록(한 줄로 적힌 것)'), h('ul', null, c.actions.map(function (a) {
+          return h('li', null, a.text, a.count > 1 ? h('span', { class: 'note' }, ' · ' + a.count + '건') : null, a.kind === 'expert' ? h('span', { class: 'kind danger' }, '담당자·전문가') : null);
+        }))) : null),
       h('div', { class: 'guide-grid' },
         h('section', null, h('h3', null, '필요 공구'), h('p', null, c.tools.join(', ') || '-'), h('h3', null, '자주 바꾼 부품'), h('p', null, c.parts.join(', ') || '-')),
         h('section', { class: 'call-box' }, h('h3', null, '이럴 때는 멈추고 전문가를 부릅니다'), h('ul', null, c.callExpert.map(function (s) { return h('li', null, s); })))),
@@ -838,24 +978,32 @@
     var wrap = h('div');
     add(wrap, pageHead('④ 비용 현황', '외부 수리 비용과 자체 처리 비율', '외부 수리를 몇 번, 얼마나 불렀는지와 팀이 직접 고친 비율이 어떻게 바뀌는지 봅니다. 「외부/자체」 와 「비용」 칸이 채워진 사례로 계산합니다.'));
     if (!db.cases.length) { add(wrap, emptyNotice()); return wrap; }
-    var all = L.costReport(db.cases);
+    var all = L.costReport(db.cases, '', '', { dedupe: ui.cost.dedupe });
     var months = L.monthRange(all.from, all.to);
     var f = ui.cost;
     var from = f.from && months.indexOf(f.from) >= 0 ? f.from : all.from, to = f.to && months.indexOf(f.to) >= 0 ? f.to : all.to;
     if (from > to) { var t = from; from = to; to = t; }
-    var rep = L.costReport(db.cases, from, to);
+    var rep = L.costReport(db.cases, from, to, { dedupe: f.dedupe });
+    var dedupeCb = h('input', { type: 'checkbox' }); dedupeCb.checked = f.dedupe !== false;
+    dedupeCb.addEventListener('change', function () { f.dedupe = dedupeCb.checked; render(); });
     add(wrap, h('section', { class: 'card filters-card no-print' }, h('div', { class: 'filters' },
       fld('시작 달', sel(months, from, { onchange: function (e) { f.from = e.target.value; render(); } })),
       fld('끝 달', sel(months, to, { onchange: function (e) { f.to = e.target.value; render(); } })),
       h('div', { class: 'btn-row' },
         h('button', { type: 'button', class: 'btn', onclick: function () { exportCost(rep); } }, '엑셀 내보내기'),
-        h('button', { type: 'button', class: 'btn', onclick: function () { window.print(); } }, '인쇄')))));
+        h('button', { type: 'button', class: 'btn', onclick: function () { window.print(); } }, '인쇄'))),
+      rep.dups.some(function (d) { return d.sameCost; }) || f.dedupe === false ? h('label', { class: 'opt', style: 'margin-top:8px' }, dedupeCb, h('span', null, '같은 설비·같은 금액으로 이어 보고된 줄은 금액을 한 번만 셈')) : null));
     var T = rep.total;
     add(wrap, h('div', { class: 'tiles' },
-      tile('외부 수리 비용', L.fmtWon(T.extCost), from + ' ~ ' + to),
-      tile('외부 수리 건수', T.extCount + '건', '전체 ' + T.total + '건 중'),
-      tile('자체 처리 비율', L.fmtPct(T.selfRatio), '자체 ' + T.selfCount + '건'),
-      tile('외부 1건 평균', T.extCount ? L.fmtWon(T.extCost / T.extCount) : '-', '정비 시간 합계 ' + T.hours + '시간')));
+      tile('적힌 수리 비용 합계', L.fmtWon(T.allCost), '금액이 적힌 ' + T.costKnown + '건 · ' + from + ' ~ ' + to),
+      tile('외부 수리 비용', L.fmtWon(T.extCost), '외부 ' + T.extCount + '건 · 구분 모름 비용 ' + L.fmtWon(T.unknownCost)),
+      tile('자체 처리 비율', L.fmtPct(T.selfRatio), '자체 ' + T.selfCount + '건 · 구분 모름 ' + T.unknownCount + '건'),
+      tile('견적(실지출 아님)', T.estCount ? L.fmtWon(T.estCost) : '-', T.estCount ? '견적 ' + T.estCount + '건 — 합계에서 뺌' : '진행 중 ' + T.pending + '건')));
+    var gaps = [];
+    if (T.total - T.costKnown - T.estCount > 0) gaps.push('비용이 「미기재」 인 사례가 ' + (T.total - T.costKnown - T.estCount) + '건이라 합계는 적힌 금액만입니다(0원으로 치지 않음).');
+    if (T.unknownCount) gaps.push('수리 업체·외부/자체를 모르는 사례 ' + T.unknownCount + '건은 자체 처리 비율에서 빠집니다.');
+    if (rep.dups.length) gaps.push('같은 고장이 이어 보고된 것 같은 줄 ' + rep.dups.length + '쌍' + (rep.dupCost ? '(같은 금액 ' + L.fmtWon(rep.dupCost) + (rep.deduped ? ' — 한 번만 셈' : ' — 두 번 셈 중') + ')' : '') + '. 「자료 점검」 에서 확인해 주세요.');
+    if (gaps.length) add(wrap, h('div', { class: 'alert warn' }, gaps.map(function (g) { return h('div', null, g); }), h('a', { href: '#/check' }, '자료 점검 보기')));
     if (rep.early && rep.late && rep.early.total && rep.late.total) {
       add(wrap, h('p', { class: 'alert info' }, '앞 기간(' + from + ' ~ ' + rep.monthly[Math.floor(rep.monthly.length / 2) - 1].month + ') 자체 처리 ' + L.fmtPct(rep.early.selfRatio) + ' · 외부 비용 ' + L.fmtWon(rep.early.extCost) +
         ' → 뒤 기간(' + rep.splitMonth + ' ~ ' + to + ') 자체 처리 ' + L.fmtPct(rep.late.selfRatio) + ' · 외부 비용 ' + L.fmtWon(rep.late.extCost) + '.'));
@@ -864,23 +1012,35 @@
       (rep.undated ? '일자가 없는 사례 ' + rep.undated + '건은 빠졌습니다. ' : '') + '외부/자체가 비어 있는 사례는 비율 계산에서 빠집니다.'));
     var labels = rep.monthly.map(function (m) { return m.month.slice(2).replace('-', '.'); });
     add(wrap, h('div', { class: 'charts' },
-      C.figure('월별 외부 수리 비용(만원)', { labels: labels, series: [{ name: '외부 수리 비용', values: rep.monthly.map(function (m) { return L.round(m.extCost / 10000, 1); }), color: 'var(--series-1)' }], unit: '만원' }),
+      C.figure('월별 수리 비용(만원, 적힌 금액)', { labels: labels, series: [
+        { name: '적힌 비용 전체', values: rep.monthly.map(function (m) { return L.round(m.allCost / 10000, 1); }), color: 'var(--series-1)' },
+        { name: '그중 외부', values: rep.monthly.map(function (m) { return L.round(m.extCost / 10000, 1); }), color: 'var(--series-2)' }], unit: '만원' }),
       C.figure('월별 정비 건수', { labels: labels, series: [
         { name: '외부', values: rep.monthly.map(function (m) { return m.extCount; }), color: 'var(--series-2)' },
-        { name: '자체', values: rep.monthly.map(function (m) { return m.selfCount; }), color: 'var(--series-3)' }], unit: '건' }),
+        { name: '자체', values: rep.monthly.map(function (m) { return m.selfCount; }), color: 'var(--series-3)' },
+        { name: '구분 모름', values: rep.monthly.map(function (m) { return m.unknownCount; }), color: 'var(--muted)' }], unit: '건' }),
       C.figure('월별 자체 처리 비율', { labels: labels, series: [{ name: '자체 처리 비율', values: rep.monthly.map(function (m) { return m.selfRatio; }), color: 'var(--series-3)' }], unit: '%', type: 'line', minMax: 1 })));
     add(wrap, h('section', { class: 'card' }, h('h2', null, '월별'),
-      table(['달', '전체', '외부', '자체', '자체 비율', '외부 비용', '자체 부품비', '정비 시간'], rep.monthly.map(function (m) {
-        return [m.month, m.total, m.extCount, m.selfCount, L.fmtPct(m.selfRatio), L.fmtWon(m.extCost), L.fmtWon(m.selfCost), m.hours];
-      }), { num: [false, true, true, true, true, true, true, true] })));
+      table(['달', '전체', '외부', '자체', '구분 모름', '자체 비율', '적힌 비용', '외부 비용', '자체 부품비'], rep.monthly.map(function (m) {
+        return [m.month, m.total, m.extCount, m.selfCount, m.unknownCount, L.fmtPct(m.selfRatio), L.fmtWon(m.allCost), L.fmtWon(m.extCost), L.fmtWon(m.selfCost)];
+      }), { num: [false, true, true, true, true, true, true, true, true] })));
+    function groupTable(title, list, note) {
+      return h('section', { class: 'card' }, h('h2', null, title), note ? h('p', { class: 'note' }, note) : null,
+        table(['구분', '전체', '외부', '자체', '구분 모름', '적힌 비용', '외부 비용', '진행 중'], list.map(function (r) {
+          return [r.label, r.total, r.extCount, r.selfCount, r.unknownCount, L.fmtWon(r.allCost), L.fmtWon(r.extCost), r.pending];
+        }), { num: [false, true, true, true, true, true, true, true] }));
+    }
+    add(wrap, groupTable('설비 종류별', rep.byFamily, '「압출기 1호기」 「압출 1호기」 「압출기」 를 한 종류로 묶었습니다. 호기별은 아래 「설비별」.'));
+    add(wrap, groupTable('부위별', rep.byPart, '원인 묶음의 부위(전기·제어 · 냉각 · 모터·구동 …)로 묶었습니다.'));
+    add(wrap, groupTable('수리 업체별', rep.byVendor, '업체 이름은 이 브라우저 안에만 있습니다.'));
     add(wrap, h('section', { class: 'card' }, h('h2', null, '설비별'),
-      table(['설비', '전체', '외부', '자체', '자체 비율', '외부 비용', '정비 시간'], rep.byEquipment.map(function (r) {
+      table(['설비', '전체', '외부', '자체', '자체 비율', '적힌 비용', '외부 비용'], rep.byEquipment.map(function (r) {
         var e = equipOf(r.label);
-        return [r.label + (e && e.type ? ' · ' + e.type : ''), r.total, r.extCount, r.selfCount, L.fmtPct(r.selfRatio), L.fmtWon(r.extCost), r.hours];
+        return [r.label + (e && e.type ? ' · ' + e.type : ''), r.total, r.extCount, r.selfCount, L.fmtPct(r.selfRatio), L.fmtWon(r.allCost), L.fmtWon(r.extCost)];
       }), { num: [false, true, true, true, true, true, true] })));
     add(wrap, h('section', { class: 'card' }, h('h2', null, '원인별'),
-      table(['원인', '전체', '외부', '자체', '자체 비율', '외부 비용', ''], rep.byCause.map(function (r) {
-        return [r.label, r.total, r.extCount, r.selfCount, L.fmtPct(r.selfRatio), L.fmtWon(r.extCost),
+      table(['원인', '전체', '외부', '자체', '자체 비율', '적힌 비용', ''], rep.byCause.map(function (r) {
+        return [r.label, r.total, r.extCount, r.selfCount, L.fmtPct(r.selfRatio), L.fmtWon(r.allCost),
           h('a', { href: '#/guide?k=' + encodeURIComponent(r.key), class: 'no-print' }, '가이드')];
       }), { num: [false, true, true, true, true, true] })));
     add(wrap, h('section', { class: 'card' }, h('h2', null, '자체 처리 전환 후보'),
@@ -894,7 +1054,11 @@
     writeXlsx('정비비용현황_' + rep.from + '_' + rep.to + '.xlsx', {
       '월별': [['달', '전체', '외부', '자체', '자체 비율(%)', '외부 비용(원)', '자체 부품비(원)', '정비 시간']].concat(rep.monthly.map(function (m) { return [m.month, m.total, m.extCount, m.selfCount, m.selfRatio == null ? '' : Math.round(m.selfRatio * 100), m.extCost, m.selfCost, m.hours]; })),
       '설비별': [['설비', '전체', '외부', '자체', '자체 비율(%)', '외부 비용(원)', '정비 시간']].concat(rep.byEquipment.map(function (r) { return [r.label, r.total, r.extCount, r.selfCount, r.selfRatio == null ? '' : Math.round(r.selfRatio * 100), r.extCost, r.hours]; })),
-      '원인별': [['원인', '전체', '외부', '자체', '자체 비율(%)', '외부 비용(원)', '정비 시간']].concat(rep.byCause.map(function (r) { return [r.label, r.total, r.extCount, r.selfCount, r.selfRatio == null ? '' : Math.round(r.selfRatio * 100), r.extCost, r.hours]; }))
+      '원인별': [['원인', '전체', '외부', '자체', '자체 비율(%)', '외부 비용(원)', '정비 시간']].concat(rep.byCause.map(function (r) { return [r.label, r.total, r.extCount, r.selfCount, r.selfRatio == null ? '' : Math.round(r.selfRatio * 100), r.extCost, r.hours]; })),
+      '종류·부위·업체별': [['나눔', '구분', '전체', '외부', '자체', '구분 모름', '적힌 비용(원)', '외부 비용(원)', '견적(원)', '진행 중']].concat(
+        [['설비 종류', rep.byFamily], ['부위', rep.byPart], ['수리 업체', rep.byVendor]].reduce(function (a, g) {
+          return a.concat(g[1].map(function (r) { return [g[0], r.label, r.total, r.extCount, r.selfCount, r.unknownCount, r.allCost, r.extCost, r.estCost, r.pending]; }));
+        }, []))
     });
   }
 
@@ -919,7 +1083,8 @@
         fld('최소 유사도(0~1)', num('minScore', '0.01', '0', '1'), '이보다 낮으면 빼기. 기본 ' + L.DEFAULT_OPTS.minScore),
         fld('태그 무게(0~1)', num('tagWeight', '0.05', '0', '1'), '증상 태그가 같을 때의 비중. 기본 ' + L.DEFAULT_OPTS.tagWeight),
         fld('같은 설비 가산점', num('sameEquipBonus', '0.01', '0', '0.5'), '기본 ' + L.DEFAULT_OPTS.sameEquipBonus),
-        fld('같은 종류 설비 가산점', num('sameTypeBonus', '0.01', '0', '0.5'), '기본 ' + L.DEFAULT_OPTS.sameTypeBonus))));
+        fld('같은 종류 설비 가산점', num('sameTypeBonus', '0.01', '0', '0.5'), '기본 ' + L.DEFAULT_OPTS.sameTypeBonus),
+        fld('같은 부위 가산점', num('partBonus', '0.05', '0', '1'), '증상에 적은 부위(서보·벨트·냉각 …)가 원인과 같을 때. 기본 ' + L.DEFAULT_OPTS.partBonus))));
     add(wrap, AIP.settingsCard({ toast: toast }));
     var restoreIn = h('input', { type: 'file', accept: '.json,application/json', 'aria-label': '백업 파일 고르기', onchange: function (e) {
       var f = e.target.files[0]; e.target.value = ''; if (!f) return;
@@ -997,7 +1162,7 @@
   var NEXT = [
     { k: 'equip', t: '대상 설비 목록', d: '설비명·모델·제조사(사진 한 장씩이면 충분합니다). 「설정 → 설비 목록」 에 바로 넣어도 됩니다.' },
     { k: 'manual', t: '설비 매뉴얼 PDF', d: '특히 「알람 목록」 「고장 대응(트러블슈팅) 표」 쪽. 설비마다 「매뉴얼 메모」 에 붙이면 AI 프롬프트에 들어갑니다.' },
-    { k: 'receipt', t: '외부 정비 내역서 5~10건', d: '증상·원인·조치·교체 부품·금액이 보이게. 업체 이름·담당자 이름은 가리고, 빈 양식이나 엑셀 한 장으로 옮겨 적어도 됩니다.' },
+    { k: 'receipt', t: '설비 고장 수리이력(엑셀)', d: '2025~2026 수리이력 60건을 받아 2차에 반영했습니다. 「자료 점검」 화면의 「더 채우면 좋은 칸」(원인 · 조치 순서 · 외부/자체 · 비용)을 채워 주시면 진단·가이드북·비용 현황이 좋아집니다.' },
     { k: 'photo', t: '고장 사진·영상과 증상 메모', d: '찍은 날·설비·「무엇이 이상했는지」 한 줄. 사진은 사례에 붙이고, 영상은 보관 위치만 적습니다.' },
     { k: 'top', t: '자주 나는 고장 상위 3~5가지', d: '예시에 넣은 히터 단선·센서·유압 누유·모터 과부하·금형 막힘이 실제와 맞는지, 다른 것이 있는지.' },
     { k: 'safety', t: '팀에서 직접 해도 되는 작업의 선', d: '전기·유압·고온 작업 가운데 사내 규정상 팀원이 할 수 있는 것과 반드시 외부를 부르는 것.' }
@@ -1005,7 +1170,7 @@
   function viewNext() {
     var wrap = h('div');
     db.nextChecks = db.nextChecks || {};
-    add(wrap, pageHead('다음 단계', '실제 자료로 넘어가려면', '1단계는 가상 사례로 만들었습니다. 아래 자료를 받으면 실제 정비 내역으로 사례집을 만들고 진단·가이드를 맞춥니다. 시작점은 「정비 내역을 표로 정리해 증상 → 원인 사례집」 입니다.'));
+    add(wrap, pageHead('다음 단계', '실제 자료로 넘어가려면', '1단계는 가상 사례로 만들었고, 2차에서 보내 주신 수리이력 양식을 그대로 읽게 고쳤습니다. 아래 자료가 더 오면 진단·가이드를 맞춥니다.'));
     add(wrap, h('section', { class: 'card' }, h('h2', null, '보내 주실 것'),
       h('ul', { class: 'checklist' }, NEXT.map(function (x) {
         var cb = h('input', { type: 'checkbox' }); cb.checked = !!db.nextChecks[x.k];
@@ -1014,7 +1179,8 @@
       }))));
     add(wrap, h('section', { class: 'card' }, h('h2', null, '2단계에서 만드는 것'),
       h('ol', null,
-        h('li', null, '받은 정비 내역서로 사례집 만들기 — 열 맞추기·원인 이름 묶기를 실제 표기에 맞춤'),
+        h('li', null, '수리이력의 빈 칸(원인 · 조치 순서 · 외부/자체 · 비용) 채우기 — 「자료 점검 → 지금 자료를 권장 양식으로 내보내기」 로 받은 표에 적어 다시 가져오기'),
+        h('li', null, '증상 사진 한꺼번에 붙이기 — 「사진 파일명」 칸과 사진 폴더를 맞춰 사례마다 자동으로 붙이기(지금은 사례마다 「고치기 → 사진」)'),
         h('li', null, '매뉴얼 PDF 에서 알람·고장 대응 표를 뽑아 진단 근거로 함께 보여 주기(문서 검색, NotebookLM·Dify 부터)'),
         h('li', null, '팀 공유 — 여러 사람이 같은 사례집을 쓰도록 공유 저장소(사내 환경 확인 후)'),
         h('li', null, '사진으로 부위·증상 설명 초안 만들기(사진이 모이면)'))));
@@ -1022,7 +1188,7 @@
   }
 
   /* ── 그리기 ─────────────────────────────── */
-  var VIEWS = { diagnose: viewDiagnose, cases: viewCases, import: viewImport, guide: viewGuide, cost: viewCost, settings: viewSettings, next: viewNext };
+  var VIEWS = { diagnose: viewDiagnose, cases: viewCases, import: viewImport, check: viewCheck, guide: viewGuide, cost: viewCost, settings: viewSettings, next: viewNext };
   var lastRoute = '';
   function render() {
     var r = route();

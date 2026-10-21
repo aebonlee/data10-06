@@ -253,7 +253,7 @@ test('제목 줄 아래 머리행 찾기 · 다른 열 이름 자동 연결', ()
   const map = L.autoMap(L.headersOf(aoa, hr), null);
   assert.deepEqual(map, { date: 0, equipment: 1, symptom: 2, cause: 3, steps: 4, parts: 5, repairBy: 6, cost: 7, hours: 8, memo: 9 });
   assert.deepEqual(L.missingRequired(map), []);
-  assert.deepEqual(L.missingRequired({ date: 0 }), ['증상', '원인']);
+  assert.deepEqual(L.missingRequired({ date: 0 }), ['증상'], '2차: 원인 칸은 없어도 됨(증상·조치에서 짐작)');
 });
 test('내역서 30건 → 사례 30건 (단계·금액·시간·구분이 원본과 같음, 합계 줄은 건너뜀)', () => {
   const aoa = roundTrip(Sample.receiptAoa());
@@ -364,6 +364,223 @@ test('주소 정리·키 없으면 인증 머리글 없음·응답 읽기', () =
   assert.equal(E.parseChatResponse({ choices: [{ message: { content: '답' } }] }), '답');
   assert.equal(E.STORE_KEY, 'data10-06.ai');
   assert.equal(E.toStored({ baseUrl: 'https://x/v1', model: 'm', apiKey: 'k', remember: false }).apiKey, '');
+});
+
+console.log('11. 2차 — 실제 수리이력 양식(가상 값으로 같은 모양)');
+const LOG = Sample.repairLogAoa();
+const logRes = () => { const hr = L.detectHeaderRow(LOG); return L.applyMapping(LOG, hr, L.autoMap(L.headersOf(LOG, hr), null), { idPrefix: 'g' }); };
+test('느슨한 날짜 — 주차 · 월 · 보고서 기준 · 물결 · 연도 칸', () => {
+  assert.deepEqual(L.looseDate('2025-03 2주차'), { date: '2025-03-08', prec: 'week' });
+  assert.deepEqual(L.looseDate('2025-04 3~4주차'), { date: '2025-04-15', prec: 'week' });
+  assert.deepEqual(L.looseDate('2025-03~04'), { date: '2025-03-01', prec: 'month' });
+  assert.deepEqual(L.looseDate('2026-01 (보고서 기준)'), { date: '2026-01-01', prec: 'month' });
+  assert.deepEqual(L.looseDate('2026-09-07 (보고서 기준)'), { date: '2026-09-07', prec: 'day' });
+  assert.deepEqual(L.looseDate('3월 2주차', 2025), { date: '2025-03-08', prec: 'week' });
+  assert.deepEqual(L.looseDate('3월 2주차'), { date: '', prec: '' }, '연도가 없으면 지어내지 않음');
+  assert.deepEqual(L.looseDate('미확인'), { date: '', prec: '' });
+  assert.deepEqual(L.looseDate('2025-13 1주차'), { date: '', prec: '' });
+});
+test('비용 칸 — 미기재는 0 이 아님 · 무상 · 개당 · 견적 · 여러 금액 더하기', () => {
+  assert.deepEqual(L.parseCost('미기재'), { value: null, kind: 'missing' });
+  assert.deepEqual(L.parseCost('무상'), { value: 0, kind: 'free' });
+  assert.deepEqual(L.parseCost('350,000원'), { value: 350000, kind: 'won' });
+  assert.deepEqual(L.parseCost('40,000원/개'), { value: 40000, kind: 'unit' });
+  assert.deepEqual(L.parseCost('보수 견적 2,000,000원 + 운반비 300,000원(견적 기준, 실제 지출 확인 필요)'), { value: 2300000, kind: 'estimate' });
+  assert.deepEqual(L.parseCost('중고 부품 900,000원'), { value: 900000, kind: 'won' });
+  assert.deepEqual(L.parseCost('15만원'), { value: 150000, kind: 'won' });
+  assert.deepEqual(L.parseCost(250000), { value: 250000, kind: 'won' });
+  assert.equal(L.parseCost('나중에').kind, 'unread');
+  assert.equal(L.spent({ cost: 100, costKind: 'estimate' }), 0, '견적은 지출 합계에서 뺌');
+});
+test('수리 업체 → 외부/자체 · 처리 상태 · 처리일자에서 조치만', () => {
+  assert.deepEqual(L.parseVendor('미기재'), { vendor: '', by: '' });
+  assert.deepEqual(L.parseVendor('자체 조치'), { vendor: '자체 조치', by: '자체' });
+  assert.deepEqual(L.parseVendor('A정비(점검 예정)'), { vendor: 'A정비', by: '외부' });
+  assert.deepEqual(L.parseVendor('전기기사(업체명 미기재)'), { vendor: '전기기사', by: '외부' });
+  assert.deepEqual(L.parseVendor('A/S 업체 미기재'), { vendor: 'A/S', by: '외부' });
+  assert.equal(L.caseStatus('타이머 교체 완료'), '완료');
+  assert.equal(L.caseStatus('교체 필요로 보고'), '진행 중');
+  assert.equal(L.caseStatus('다음 주 점검 예정으로 기재, 완료 여부 미확인'), '진행 중', '「완료 여부 미확인」 은 완료가 아님');
+  assert.equal(L.caseStatus('2026-03 중 교체 예정; 완료일 미기재'), '진행 중');
+  assert.equal(L.caseStatus('이동식 냉풍기 설치 후 멈춤 없음'), '완료');
+  assert.equal(L.caseStatus(''), '');
+  assert.equal(L.actionOf('2026-02 (보고서 기준) 온도 조절계 교체 완료'), '온도 조절계 교체 완료');
+  assert.equal(L.actionOf('2025-03 3주차'), '');
+  assert.equal(L.actionOf('2026-03-03 헤드 우선 교체 예정 / 전체 교체 예정'), '헤드 우선 교체 예정 / 전체 교체 예정');
+});
+test('조치 나누기 — 소수(2.5일)·숫자 사이 화살표(85dB→76dB)는 자르지 않음', () => {
+  assert.deepEqual(L.splitSteps('교체; 2.5일 가동 중지'), ['교체', '2.5일 가동 중지']);
+  assert.deepEqual(L.splitSteps('감속기 교체 완료, 소음 85dB→76dB'), ['감속기 교체 완료, 소음 85dB→76dB']);
+  assert.deepEqual(L.splitSteps('전원 차단 → 센서 확인'), ['전원 차단', '센서 확인']);
+});
+test('원인 짐작 — 「A로 B」 의 A · 고장 낱말에 가까운 부위 · 넓은 말은 마지막', () => {
+  const cases = [
+    ['릴레이 접점 불량으로 공급 멈춤', '', '릴레이 불량'],
+    ['타이머 교체 중 합선, 구동 모터 소손', '', '모터 고장·소손'],
+    ['냉각가스 배관 누유', '', '냉각 계통 이상(냉매·누유)'],
+    ['냉각기 누유 발생', '', '냉각 계통 이상(냉매·누유)'],
+    ['호퍼 입구 이물 막힘으로 온도 상승, 설비 정지', '', '호퍼·투입구 막힘'],
+    ['모터를 바꾼 뒤에도 서보 에러; 서보드라이버는 점검해도 이상 없음', '', '서보 드라이버·서보 이상'],
+    ['돌릴 때 소리가 커짐', '모터 베어링에 그리스 주입, 소음 개선', '베어링·롤러 마모'],
+    ['스크류 헤드 파손', '', '스크류·바렐 손상'],
+    ['걸이 부품 파손', '', '소모 부품·구조물 파손'],
+    ['여름철 고온으로 작동 멈춤', '', '작업 환경(고온·먼지)'],
+    ['2존 온도 상승 불량', '온도 조절계 교체 완료', '제어 기판·계기 고장'],
+    ['수리 필요(견적 요청함)', '', '원인 미상'],
+    ['누수 발생', '', '펌프 고장·누수'],
+    ['절단 센서 불량', '', '위치·동작 센서 불량']
+  ];
+  cases.forEach(([sym, act, want]) => assert.equal(L.inferCause(sym, act, ''), want, sym));
+  // 1단계 원인 묶기는 그대로(센서 단선이 히터로 가지 않음 등)
+  assert.equal(L.canonCause('열전대 단선'), '온도 센서 불량');
+  assert.equal(L.canonCause('냉각 계통 이상(냉매·누유)'), '냉각 계통 이상(냉매·누유)', '묶음 이름은 자기 자신으로');
+});
+test('설비 종류 — 「압출기 1호기」 「압출 1호기」 「압출기」 는 한 종류, 냉각기가 압출기보다 먼저', () => {
+  assert.equal(L.equipFamily('압출기 1호기'), '압출기');
+  assert.equal(L.equipFamily('압출 1호기'), '압출기');
+  assert.equal(L.equipFamily('압출 냉각기 1호기'), '냉각기');
+  assert.equal(L.equipFamily('사출 1호기(구형)'), '사출기');
+  assert.equal(L.equipFamily('스프링 환풍기'), '환풍기');
+  assert.equal(L.equipFamily('설비 A'), '설비 A');
+  assert.equal(L.equipUnit('사출기 2호기'), '2호기');
+});
+test('지금 양식 그대로 읽기 — 머리행 · 열 자동 연결 · 원인 없이 26건', () => {
+  const hr = L.detectHeaderRow(LOG);
+  assert.equal(hr, 0);
+  const map = L.autoMap(L.headersOf(LOG, hr), null);
+  assert.deepEqual(map, { year: 0, equipment: 1, date: 2, symptom: 3, done: 4, vendor: 5, cost: 6, memo: 7, ref: 8 });
+  assert.deepEqual(L.missingRequired(map), []);
+  const res = logRes();
+  assert.equal(res.rows.length, Sample.LOG_ROWS.length);
+  assert.deepEqual(res.issues, []);
+  assert.ok(res.rows.every(c => c.causeInferred && c.cause), '원인은 모두 짐작');
+  assert.equal(res.rows.filter(c => L.isUnknownCause(c.cause)).length, 0);
+});
+test('조치는 비고(앞 해) → 처리일자의 조치 글(뒤 해)에서, 일자는 처리일자에서도', () => {
+  const r = logRes().rows;
+  const by = sym => r.find(c => c.symptom === sym);
+  assert.deepEqual(by('타이머 고장').steps, ['타이머 교체 완료']);
+  assert.equal(by('타이머 고장').memo, '', '비고를 조치로 옮겼으면 비고는 비움');
+  assert.deepEqual(by('2존 온도 상승 불량').steps, ['온도 조절계 교체 완료']);
+  assert.deepEqual(by('스크류 헤드 파손').steps, ['헤드 우선 교체 예정', '전체 스크류 교체 예정']);
+  assert.equal(by('펌프 쪽 누수').datePrec, 'month');
+  assert.equal(by('호퍼 입구 이물 막힘으로 온도 상승, 설비 정지').date, '2026-08-19');
+  assert.equal(by('벨트 마모로 속도 불균일').date, '2025-06-08');
+  const precs = r.reduce((m, c) => (m[c.datePrec] = (m[c.datePrec] || 0) + 1, m), {});
+  assert.deepEqual(precs, { month: 9, week: 14, day: 3 });
+});
+test('외부/자체 · 비용 구분 · 처리 상태 개수', () => {
+  const r = logRes().rows;
+  const cnt = f => r.reduce((m, c) => (m[f(c) || '-'] = (m[f(c) || '-'] || 0) + 1, m), {});
+  assert.deepEqual(cnt(c => c.repairBy), { '외부': 9, '-': 15, '자체': 2 });
+  assert.deepEqual(cnt(c => c.costKind), { missing: 15, won: 8, unit: 1, free: 1, estimate: 1 });
+  assert.deepEqual(cnt(c => c.status), { '완료': 18, '진행 중': 7, '-': 1 });
+  assert.equal(r.find(c => c.symptom === '모터 쇼트로 정지').repairBy, '외부', '「전기기사」 는 외부');
+  assert.equal(r.find(c => c.symptom === '펌프 쪽 누수').repairBy, '외부');
+});
+test('병합 셀 풀기 · 같은 머리 모양 시트 함께 · 요약 시트는 빼기', () => {
+  const aoa = [['설비명', '증상', '비용'], ['압출기 1호기', '벨트 마모', '1원'], [null, '타이머 고장', null]];
+  const u = L.unmerge(aoa, [{ s: { r: 1, c: 0 }, e: { r: 2, c: 0 } }]);
+  assert.equal(u[2][0], '압출기 1호기');
+  assert.equal(aoa[2][0], null, '원본은 그대로');
+  const plans = L.sheetPlans([{ name: '2025', aoa: LOG }, { name: '2026', aoa: LOG }, { name: '요약', aoa: Sample.repairLogSummaryAoa() }]);
+  assert.deepEqual(plans.map(p => p.name), ['2025', '2026']);
+});
+test('중복·연속 보고 의심 — 같은 금액 쌍은 비용을 한 번만 셈(끄면 두 번)', () => {
+  const r = logRes().rows;
+  const d = L.dupSuspects(r);
+  const same = d.filter(x => x.sameCost);
+  assert.equal(same.length, 1);
+  assert.equal(same[0].cost, 1500000);
+  const on = L.costReport(r), off = L.costReport(r, '', '', { dedupe: false });
+  assert.equal(off.total.allCost - on.total.allCost, 1500000);
+  assert.equal(on.dupCost, 1500000);
+});
+test('비용 현황 — 구분 모름 · 견적을 따로, 종류·부위·업체별', () => {
+  const rep = L.costReport(logRes().rows);
+  const T = rep.total;
+  assert.equal(T.total, 26);
+  assert.equal(T.unknownCount, 15);
+  assert.equal(T.estCount, 1); assert.equal(T.estCost, 2000000);
+  assert.equal(T.allCost, T.extCost + T.selfCost + T.unknownCost);
+  assert.equal(T.allCost, 180000 + 25000 + 60000 + 1200000 + 45000 + 250000 + 1500000 + 0 + 900000, '적힌 실지출만, 같은 금액 중복 한 번');
+  assert.ok(rep.byFamily.some(x => x.label === '냉각기' && x.total === 5), '「냉각기 1호기 순환펌프」 도 냉각기');
+  assert.ok(rep.byPart.some(x => x.label === '냉각'));
+  assert.ok(rep.byVendor.some(x => x.label === '(업체 미기재)'));
+});
+test('진단 — 부위 낱말 가산 · 같은 뜻 말 · 원인 미상은 순위에서 뺌', () => {
+  const r = logRes().rows;
+  assert.equal(L.diagnose(r, { text: '냉각기에서 기름이 샘' }).causes[0].cause, '냉각 계통 이상(냉매·누유)');
+  assert.equal(L.diagnose(r, { text: '서보 알람 뜨고 멈춤' }).causes[0].cause, '서보 드라이버·서보 이상');
+  assert.equal(L.diagnose(r, { text: '타이머가 안 됨' }).causes[0].cause, '타이머 고장');
+  assert.ok(L.expandText('작동 불가').includes('멈춤'));
+  // 증상에 적은 부위(서보)가 원인과 같으면 가산 — 없으면 「알람·멈춤」 이 겹친 다른 원인이 1위가 됨
+  const toy = [L.cleanCase({ id: 'a', symptom: '서보드라이버 고장', cause: '서보드라이버 고장' }), L.cleanCase({ id: 'b', symptom: '알람 뜨고 멈춤', cause: '제어 기판 고장' }), L.cleanCase({ id: 'c', symptom: '벨트 마모', cause: '벨트 마모' })];
+  assert.equal(L.diagnose(toy, { text: '서보 알람 뜨고 멈춤' }).causes[0].cause, '서보 드라이버·서보 이상');
+  assert.equal(L.diagnose(toy, { text: '서보 알람 뜨고 멈춤' }, { partBonus: 0 }).causes[0].cause, '제어 기판·계기 고장');
+  const unk = r.concat([L.cleanCase({ id: 'u1', symptom: '벨트 쪽 이상', cause: '원인 미상' })]);
+  const dg = L.diagnose(unk, { text: '벨트 쪽 이상' });
+  assert.ok(dg.sims.some(x => x.c.id === 'u1'), '비슷한 사례 표에는 보임');
+  assert.ok(!dg.causes.some(x => L.isUnknownCause(x.cause)), '원인 순위에는 없음');
+});
+test('먼저 확인할 것·가이드 — 「예정·보고」 같은 진행 기록은 빼고, 한 줄 조치는 지난 조치 기록으로', () => {
+  assert.equal(L.stepKind('A/S 방문 예정'), 'note');
+  assert.equal(L.stepKind('교체 필요로 보고'), 'note');
+  assert.equal(L.firstCheck({ steps: ['A/S 방문 예정', '서보드라이버 교체'] }), '서보드라이버 교체');
+  const r = logRes().rows;
+  const key = L.causeKey('타이머 고장');
+  const card = L.guideCard(L.guideDraft(r, key));
+  assert.equal(card.steps.length, 0, '두 단계 이상 적힌 사례가 없으면 순서를 지어내지 않음');
+  assert.deepEqual(card.actions.map(a => a.text), ['타이머 교체 완료']);
+  const txt = L.guideToText(card);
+  assert.ok(/지난 조치 기록/.test(txt));
+  assert.ok(!L.parseGuideAnswer(txt).steps, '되읽어도 지난 조치가 확인 순서로 들어가지 않음');
+});
+test('자료 점검 — 칸별 채움 · 기능별 상태 · 더 채울 칸(원인 먼저)', () => {
+  const chk = L.dataCheck(logRes().rows);
+  const F = Object.fromEntries(chk.fields.map(f => [f.id, f]));
+  assert.equal(chk.n, 26);
+  assert.equal(F.symptom.filled, 26);
+  assert.equal(F.cause.filled, 0); assert.equal(F.cause.inferred, 26);
+  assert.equal(F.repairBy.filled, 11);
+  assert.equal(F.cost.filled, 10, '금액 8 + 무상 1 + 개당 1 (견적·미기재 제외)');
+  assert.equal(chk.todo[0].id, 'cause');
+  assert.deepEqual(chk.todo.map(f => f.id).sort(), ['cause', 'cost', 'parts', 'repairBy'].sort());
+  assert.equal(chk.features[0].level, '됨');
+  assert.equal(chk.features[2].level, '일부');
+  assert.equal(chk.dupSameCost.length, 1);
+  assert.equal(chk.estimates.length, 1); assert.equal(chk.unitPrices.length, 1);
+  // 1단계 예시(칸이 다 찬 30건)는 필수 칸이 다 차 있음(자체 수리 건은 교체 부품이 없어 「교체 부품」 만 남음)
+  const full = L.dataCheck(db.cases);
+  assert.deepEqual(full.todo.map(f => f.id), ['parts']);
+  assert.equal(full.features[0].level, '좋음');
+});
+test('권장 양식 — 예시 2줄 다시 읽기 · 내 자료 내보내기(짐작한 원인은 참고 칸에만)', () => {
+  const rec = L.recommendedAoa();
+  const m = L.autoMap(L.headersOf(rec, 0), null);
+  assert.equal(Object.keys(m).length, L.RECOMMENDED_HEAD.length, '권장 양식 칸은 모두 자동 연결');
+  const rr = L.applyMapping(rec, 0, m).rows;
+  assert.equal(rr[0].steps.length, 5); assert.equal(rr[0].causeInferred, false);
+  assert.equal(rr[1].costKind, 'estimate'); assert.equal(rr[1].status, '진행 중');
+  const out = L.toRecommendedAoa(logRes().rows);
+  assert.equal(out.length, 27);
+  assert.equal(out[1][3], '', '짐작한 원인은 원인 칸에 쓰지 않음');
+  assert.ok(out[1][out[0].length - 1], '참고 칸에 짐작한 원인');
+  const back = L.applyMapping(out, 0, L.autoMap(L.headersOf(out, 0), null)).rows;
+  assert.equal(back.length, 26);
+  assert.ok(back.every(c => c.causeInferred), '다시 가져와도 짐작은 짐작');
+  assert.equal(back.find(c => c.symptom === '벨트 마모로 속도 불균일').datePrec, 'week', '주차 표기가 유지됨');
+});
+test('사례 저장·되살리기 — 2차 칸(업체·상태·비용 구분·일자 정밀도·짐작)이 남음', () => {
+  const r = logRes().rows;
+  const d2 = L.restoreDb(JSON.parse(JSON.stringify({ cases: r })));
+  ['vendor', 'status', 'costKind', 'datePrec', 'causeInferred', 'cost', 'date', 'ref'].forEach(k =>
+    assert.deepEqual(d2.cases.map(c => c[k]), r.map(c => c[k]), k));
+});
+test('가상 수리이력 — 실제 이름 없이 지어낸 표기', () => {
+  const txt = JSON.stringify(Sample.LOG_ROWS);
+  assert.ok(/가상/.test(txt));
+  assert.ok(Sample.LOG_ROWS.every(r => /^(미기재|자체 조치|[A-D][가-힣]+(\(점검 예정\))?|전기기사\(업체명 미기재\)|A\/S 업체 미기재)$/.test(r[5])), '업체는 A~D 가짜 이름·미기재·자체만');
 });
 
 console.log('\n' + passed + '개 통과' + (process.exitCode ? ' · 실패 있음' : ''));
